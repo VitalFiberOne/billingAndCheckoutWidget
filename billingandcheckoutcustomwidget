@@ -1,0 +1,153 @@
+// DO NOT REMOVE OR MODIFY THE CODE ABOVE!  (FlutterFlow injects its own imports)
+// -----------------------------------------------------------------------------
+// EXTRA imports – remember to add these packages under Build ➜ Pub Dependencies
+// flutter_stripe: ^9.5.0   •   in_app_purchase: ^3.1.7
+import 'dart:convert';
+import 'dart:io' show Platform;
+import 'package:flutter/material.dart';
+import 'package:flutter_stripe/flutter_stripe.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
+
+/// Widget Name → BillingAndCheckoutWrapper (no custom parameters)
+/// This version removes **all** FFAppState dependencies so it compiles even if
+/// you haven’t added custom App‑State fields yet.  Replace the placeholders
+/// (publishable key, Supabase URL, etc.) with real values when you’re ready.
+
+class BillingAndCheckoutWrapper extends StatefulWidget {
+  const BillingAndCheckoutWrapper({Key? key, this.width, this.height}) : super(key: key);
+  final double? width;
+  final double? height;
+  @override
+  State<BillingAndCheckoutWrapper> createState() => _BillingAndCheckoutWrapperState();
+}
+
+class _BillingAndCheckoutWrapperState extends State<BillingAndCheckoutWrapper> {
+  bool _showCheckout = false;
+  bool _loading = false;
+
+  // Hard‑coded placeholders ---------------------------------------------------
+  static const _stripeKey      = 'pk_test_REPLACE_WITH_YOUR_KEY';
+  static const _supabaseUrl    = 'https://YOUR_PROJECT.supabase.co';
+  static const _supabaseAnon   = 'YOUR_ANON_KEY';
+  static const _userId         = 'TEMP_USER_ID'; // replace with auth uid
+
+  // Simple local billing status model (no Supabase call yet)
+  String _plan   = 'basic';
+  String _status = 'free';
+  String? _issue;
+
+  // IAP ----------------------------------------------------------------------
+  final InAppPurchase _iap = InAppPurchase.instance;
+  bool _iapAvail = false;
+  List<ProductDetails> _products = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _boot();
+  }
+
+  Future<void> _boot() async {
+    await _initStripe();
+    await _initIAP();
+    setState(() {});
+  }
+
+  Future<void> _initStripe() async {
+    Stripe.publishableKey = _stripeKey;
+    await Stripe.instance.applySettings();
+  }
+
+  Future<void> _initIAP() async {
+    _iapAvail = await _iap.isAvailable();
+    if (_iapAvail) {
+      final res = await _iap.queryProductDetails({'premium_monthly'});
+      _products = res.productDetails.toList();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => _showCheckout ? _checkout() : _paywall();
+
+  // ---------------- PAYWALL UI ----------------
+  Widget _paywall() {
+    final col = {'active': Colors.green,'canceled': Colors.orange,'free': Colors.grey}[_status] ?? Colors.red;
+    final icn = {'active': Icons.check_circle,'canceled': Icons.cancel,'free': Icons.lock_open}[_status] ?? Icons.warning;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Subscription'), backgroundColor: Colors.deepPurple),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _planCard(),
+          const SizedBox(height:16),
+          Row(children:[Icon(icn,color:col),const SizedBox(width:8),Text('Status: $_status',style:TextStyle(color:col))]),
+          const SizedBox(height:12),
+          _issue==null?const Text('✅ Full access to premium'):_issueCard(),
+          const Spacer(),
+          ElevatedButton.icon(onPressed:()=>setState(()=>_showCheckout=true), icon:const Icon(Icons.upgrade), label:const Text('Upgrade Plan'), style: ElevatedButton.styleFrom(backgroundColor:Colors.deepPurple, minimumSize:const Size.fromHeight(48))),
+          const SizedBox(height:8),
+          OutlinedButton.icon(onPressed:()=>launchUrl(Uri.parse('mailto:support@glucosensedigital.com')), icon:const Icon(Icons.support_agent), label:const Text('Contact Support'), style: OutlinedButton.styleFrom(foregroundColor:Colors.deepPurple, minimumSize:const Size.fromHeight(48)))
+        ]),
+      ),
+    );
+  }
+
+  Widget _planCard()=>Container(
+    width:double.infinity,
+    padding:const EdgeInsets.all(20),
+    decoration:BoxDecoration(color:Colors.white,borderRadius:BorderRadius.circular(12),boxShadow:[const BoxShadow(color:Colors.black12,blurRadius:6)]),
+    child:Row(children:[const Icon(Icons.workspace_premium,color:Colors.deepPurple),const SizedBox(width:8),Text('Plan: $_plan',style:const TextStyle(fontSize:18,fontWeight:FontWeight.w600))]),
+  );
+
+  Widget _issueCard()=>Container(
+    padding:const EdgeInsets.all(12),
+    decoration:BoxDecoration(color:Colors.red.shade50,borderRadius:BorderRadius.circular(8),border:Border.all(color:Colors.red.shade200)),
+    child:Row(children:[const Icon(Icons.warning,color:Colors.red),const SizedBox(width:8),Expanded(child:Text(_issue!))]),
+  );
+
+  // ---------------- CHECKOUT UI ----------------
+  Widget _checkout()=>Scaffold(
+    appBar:AppBar(title:const Text('Upgrade'),backgroundColor:Colors.deepPurple,leading:BackButton(onPressed:()=>setState(()=>_showCheckout=false))),
+    body:_loading?const Center(child:CircularProgressIndicator()):Padding(
+      padding:const EdgeInsets.all(16),
+      child:Column(children:[
+        if(_iapAvail&&_products.isNotEmpty)...[
+          ElevatedButton(onPressed:()=>_buyIAP(_products.first),child:const Text('Subscribe (App Store / Play)')),
+          const Divider(height:32),
+        ],
+        ElevatedButton(onPressed:_stripeCheckout,child:const Text('Pay with Stripe')),
+      ]),
+    ),
+  );
+
+  // IAP flow (dummy validation placeholder) ------------------------------
+  Future<void> _buyIAP(ProductDetails pd) async {
+    setState(()=>_loading=true);
+    _iap.buyNonConsumable(purchaseParam:PurchaseParam(productDetails:pd));
+    _iap.purchaseStream.listen((list) async {
+      for(final p in list){
+        if(p.status==PurchaseStatus.purchased){
+          setState((){_plan='premium';_status='active';_issue=null;_showCheckout=false;});
+        }
+      }
+      if(mounted) setState(()=>_loading=false);
+    });
+  }
+
+  // Stripe checkout (dummy flow) ----------------------------------------
+  Future<void> _stripeCheckout() async {
+    setState(()=>_loading=true);
+    // Simulate success after 2 seconds
+    await Future.delayed(const Duration(seconds:2));
+    setState(()=>{
+      _plan='premium',
+      _status='active',
+      _issue=null,
+      _showCheckout=false,
+      _loading=false
+    });
+  }
+}
